@@ -1,0 +1,16 @@
+{
+  "name": "text-cosmos",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "bunx --bun vite",
+    "build": "bunx --bun vite build",
+    "preview": "bunx --bun vite preview"
+  },
+  "dependencies": {
+    "@chenglou/pretext": "0.0.3"
+  },
+  "devDependencies": {
+    "vite": "^6"
+  }
+}
