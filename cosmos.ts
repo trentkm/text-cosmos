@@ -1,5 +1,9 @@
 import { prepareWithSegments, layoutNextLine, type PreparedTextWithSegments } from '@chenglou/pretext'
 
+// ── Device detection ──
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent)
+  || (navigator.maxTouchPoints > 0 && window.innerWidth < 900)
+
 // ── Canvas setup ──
 const canvas = document.getElementById('cosmos') as HTMLCanvasElement
 const ctx = canvas.getContext('2d')!
@@ -8,7 +12,8 @@ let dpr = 1
 let needsStarRedraw = true
 
 function resize(): void {
-  dpr = window.devicePixelRatio || 1
+  // Cap DPR on mobile to avoid rendering millions of pixels
+  dpr = isMobile ? Math.min(window.devicePixelRatio, 2) : window.devicePixelRatio || 1
   W = window.innerWidth
   H = window.innerHeight
   canvas.width = W * dpr
@@ -18,13 +23,16 @@ function resize(): void {
 }
 resize()
 window.addEventListener('resize', resize)
+// iOS Safari fires this on rotate
+window.addEventListener('orientationchange', () => setTimeout(resize, 100))
 
-// ── Offscreen canvases for cached layers ──
+// ── Offscreen canvases ──
 const starCanvas = new OffscreenCanvas(1, 1)
 const starCtx = starCanvas.getContext('2d')!
-
-// Pre-rendered planet textures (keyed by planet index)
 const planetTextures: Map<number, OffscreenCanvas> = new Map()
+
+// ── Scale factor for mobile (tighter orbits, smaller objects) ──
+const sceneScale = isMobile ? 0.55 : 1
 
 // ── Input ──
 const mouse = { x: W / 2, y: H / 2, active: false }
@@ -32,6 +40,7 @@ let zoom = 1
 let prevZoom = -1
 const supernovae: { x: number; y: number; t: number; hue: number }[] = []
 
+// Mouse events
 window.addEventListener('mousemove', e => {
   mouse.x = e.clientX
   mouse.y = e.clientY
@@ -42,8 +51,79 @@ window.addEventListener('wheel', e => {
   zoom = Math.max(0.3, Math.min(3, zoom - e.deltaY * 0.001))
 }, { passive: true })
 window.addEventListener('click', e => {
+  if (isMobile) return // handled by touch
   supernovae.push({ x: e.clientX, y: e.clientY, t: 0, hue: Math.random() * 360 })
 })
+
+// Touch events
+let lastTouchDist = 0
+let touchMoveActive = false
+
+window.addEventListener('touchstart', e => {
+  e.preventDefault()
+  if (e.touches.length === 1) {
+    const t = e.touches[0]!
+    mouse.x = t.clientX
+    mouse.y = t.clientY
+    mouse.active = true
+    touchMoveActive = true
+  } else if (e.touches.length === 2) {
+    lastTouchDist = getTouchDist(e.touches)
+    touchMoveActive = false
+  }
+}, { passive: false })
+
+window.addEventListener('touchmove', e => {
+  e.preventDefault()
+  if (e.touches.length === 1 && touchMoveActive) {
+    const t = e.touches[0]!
+    mouse.x = t.clientX
+    mouse.y = t.clientY
+    mouse.active = true
+  } else if (e.touches.length === 2) {
+    const dist = getTouchDist(e.touches)
+    if (lastTouchDist > 0) {
+      const scale = dist / lastTouchDist
+      zoom = Math.max(0.3, Math.min(3, zoom * scale))
+    }
+    lastTouchDist = dist
+    touchMoveActive = false
+  }
+}, { passive: false })
+
+window.addEventListener('touchend', e => {
+  e.preventDefault()
+  if (e.touches.length === 0) {
+    // Tap = supernova
+    if (touchMoveActive && mouse.active) {
+      supernovae.push({ x: mouse.x, y: mouse.y, t: 0, hue: Math.random() * 360 })
+    }
+    mouse.active = false
+    touchMoveActive = false
+    lastTouchDist = 0
+  } else if (e.touches.length === 1) {
+    const t = e.touches[0]!
+    mouse.x = t.clientX
+    mouse.y = t.clientY
+    mouse.active = true
+    touchMoveActive = true
+    lastTouchDist = 0
+  }
+}, { passive: false })
+
+function getTouchDist(touches: TouchList): number {
+  const a = touches[0]!, b = touches[1]!
+  const dx = a.clientX - b.clientX, dy = a.clientY - b.clientY
+  return Math.sqrt(dx * dx + dy * dy)
+}
+
+// ── Hint text ──
+const hintEl = document.getElementById('hint')
+if (hintEl) {
+  hintEl.textContent = isMobile
+    ? 'Drag to warp spacetime. Pinch to zoom. Tap to create supernovae.'
+    : 'Move mouse to warp spacetime. Scroll to zoom. Click to create supernovae.'
+}
 
 // ── Text corpus ──
 const TEXTS = [
@@ -66,16 +146,16 @@ const TEXTS = [
   'Two things are infinite the universe and human stupidity',
 ]
 
-const STAR_CHARS = '.·*+°'
 const PLANET_NAMES = ['MERCURY', 'VENUS', 'EARTH', 'MARS', 'JUPITER', 'SATURN']
 
 // ── Font ──
 const BODY_FONT = '14px "Iowan Old Style", "Palatino Linotype", Palatino, serif'
 
-// ── Star field (simple dots, not text) ──
+// ── Star field ──
 type Star = { x: number; y: number; z: number; size: number; twinkleOffset: number; brightness: number }
+const STAR_COUNT = isMobile ? 200 : 400
 const stars: Star[] = []
-for (let i = 0; i < 400; i++) {
+for (let i = 0; i < STAR_COUNT; i++) {
   stars.push({
     x: (Math.random() - 0.5) * 3000,
     y: (Math.random() - 0.5) * 3000,
@@ -99,33 +179,37 @@ type Planet = {
   prepared?: PreparedTextWithSegments
   tilt: number
   textureDirty: boolean
+  words: string[] // cached split
 }
 
+const PLANET_COUNT = isMobile ? 4 : 6
 const planets: Planet[] = []
-for (let i = 0; i < 6; i++) {
+for (let i = 0; i < PLANET_COUNT; i++) {
+  const text = TEXTS[i]!
   planets.push({
-    orbitRadius: 140 + i * 110,
+    orbitRadius: (140 + i * 110) * sceneScale,
     orbitSpeed: 0.08 + (5 - i) * 0.018,
     orbitOffset: Math.random() * Math.PI * 2,
-    radius: 20 + Math.random() * 25,
+    radius: (20 + Math.random() * 25) * sceneScale,
     hue: [30, 180, 210, 10, 35, 250][i]!,
     name: PLANET_NAMES[i]!,
-    text: TEXTS[i]!,
-    ringCount: i === 4 ? 2 : (i === 3 ? 1 : 0),
+    text,
+    ringCount: isMobile ? 0 : (i === 4 ? 2 : (i === 3 ? 1 : 0)),
     tilt: 0.3 + Math.random() * 0.4,
     textureDirty: true,
+    words: text.split(' '),
   })
 }
 
-// ── Nebulae (just glows, no per-word text) ──
+// ── Nebulae ──
 type Nebula = { x: number; y: number; radius: number; hue: number }
 const nebulae: Nebula[] = []
 for (let i = 0; i < 3; i++) {
   const angle = (i / 3) * Math.PI * 2 + Math.random() * 0.5
   nebulae.push({
-    x: Math.cos(angle) * 500 + (Math.random() - 0.5) * 200,
-    y: Math.sin(angle) * 400 + (Math.random() - 0.5) * 200,
-    radius: 120 + Math.random() * 80,
+    x: (Math.cos(angle) * 500 + (Math.random() - 0.5) * 200) * sceneScale,
+    y: (Math.sin(angle) * 400 + (Math.random() - 0.5) * 200) * sceneScale,
+    radius: (120 + Math.random() * 80) * sceneScale,
     hue: [280, 340, 200][i]!,
   })
 }
@@ -164,7 +248,7 @@ function worldToScreen(wx: number, wy: number): [number, number] {
   return [cx + (wx - mx) * zoom, cy + (wy - my) * zoom]
 }
 
-// ── Stars: rendered as simple fillRect dots to offscreen canvas ──
+// ── Stars ──
 function renderStarLayer(): void {
   if (!needsStarRedraw && zoom === prevZoom) return
   needsStarRedraw = false
@@ -193,18 +277,17 @@ function renderStarLayer(): void {
 }
 
 function drawStarField(): void {
-  // Composite the cached star layer with slight parallax shift from mouse
   const mx = mouse.active ? -(mouse.x - W / 2) * 0.015 : 0
   const my = mouse.active ? -(mouse.y - H / 2) * 0.015 : 0
   ctx.drawImage(starCanvas, mx * dpr, my * dpr, starCanvas.width, starCanvas.height, mx, my, W, H)
 }
 
-// ── Pre-render planet texture (text filling a circle) ──
+// ── Planet texture ──
 function renderPlanetTexture(planet: Planet, index: number): OffscreenCanvas {
   const prepared = orbitTextPrepared[index]
   const r = planet.radius
   const size = Math.ceil(r * 2 + 4)
-  const oc = new OffscreenCanvas(size * 2, size * 2) // 2x for quality
+  const oc = new OffscreenCanvas(size * 2, size * 2)
   const octx = oc.getContext('2d')!
   octx.scale(2, 2)
 
@@ -213,7 +296,7 @@ function renderPlanetTexture(planet: Planet, index: number): OffscreenCanvas {
   const centerX = r + 2
   const centerY = r + 2
   let cursor = { segmentIndex: 0, graphemeIndex: 0 }
-  const lineH = 10
+  const lineH = Math.max(7, 10 * sceneScale)
   const startY = centerY - r + lineH * 0.5
 
   const maxLines = Math.floor((r * 2) / lineH)
@@ -224,12 +307,13 @@ function renderPlanetTexture(planet: Planet, index: number): OffscreenCanvas {
 
     const halfChord = Math.sqrt(r * r - dist * dist)
     const lineWidth = halfChord * 2
-    if (lineWidth < 12) continue
+    if (lineWidth < 10) continue
 
     const line = layoutNextLine(prepared, cursor, lineWidth)
     if (!line) break
 
-    octx.font = '8px "Iowan Old Style", "Palatino Linotype", Palatino, serif'
+    const fontSize = Math.max(5, 8 * sceneScale)
+    octx.font = `${fontSize}px "Iowan Old Style", "Palatino Linotype", Palatino, serif`
     octx.textAlign = 'center'
     octx.textBaseline = 'middle'
 
@@ -243,13 +327,12 @@ function renderPlanetTexture(planet: Planet, index: number): OffscreenCanvas {
   return oc
 }
 
-// ── Nebulae: just gradient glows ──
+// ── Nebulae ──
 function drawNebulae(): void {
   for (let i = 0; i < nebulae.length; i++) {
     const n = nebulae[i]!
     const [nx, ny] = worldToScreen(n.x, n.y)
     const r = n.radius * zoom
-
     if (nx + r < 0 || nx - r > W || ny + r < 0 || ny - r > H) continue
 
     const grad = ctx.createRadialGradient(nx, ny, 0, nx, ny, r)
@@ -261,14 +344,14 @@ function drawNebulae(): void {
   }
 }
 
-// ── Orbital path lines ──
+// ── Orbital paths ──
 function drawOrbitalRings(): void {
   const [cx, cy] = worldToScreen(0, 0)
   ctx.setLineDash([2, 8])
   ctx.lineWidth = 0.5
   for (let i = 0; i < planets.length; i++) {
     const r = planets[i]!.orbitRadius * zoom
-    ctx.strokeStyle = `hsla(0, 0%, 40%, 0.06)`
+    ctx.strokeStyle = 'hsla(0, 0%, 40%, 0.06)'
     ctx.beginPath()
     ctx.ellipse(cx, cy, r, r * 0.4, 0, 0, Math.PI * 2)
     ctx.stroke()
@@ -276,15 +359,15 @@ function drawOrbitalRings(): void {
   ctx.setLineDash([])
 }
 
-// ── Text along orbit: render as a single fillText string, not per-char ──
+// ── Orbital text ──
+const ORBIT_SEGMENTS = isMobile ? 5 : 8
+
 function drawTextAlongOrbit(planet: Planet): void {
   if (!planet.prepared) return
   const [cx, cy] = worldToScreen(0, 0)
   const orbitR = planet.orbitRadius * zoom
   const orbitRY = orbitR * 0.4
 
-  // Render a few words at discrete positions around the orbit
-  const segmentCount = 8
   const orbitOffset = time * planet.orbitSpeed * 0.01 + planet.orbitOffset
   const fontSize = Math.max(7, 9 * zoom)
   ctx.font = `${fontSize}px "Iowan Old Style", Palatino, serif`
@@ -292,8 +375,8 @@ function drawTextAlongOrbit(planet: Planet): void {
   ctx.textBaseline = 'middle'
 
   let cursor = { segmentIndex: 0, graphemeIndex: 0 }
-  for (let s = 0; s < segmentCount; s++) {
-    const angle = orbitOffset + (s / segmentCount) * Math.PI * 2
+  for (let s = 0; s < ORBIT_SEGMENTS; s++) {
+    const angle = orbitOffset + (s / ORBIT_SEGMENTS) * Math.PI * 2
     const px = cx + Math.cos(angle) * orbitR
     const py = cy + Math.sin(angle) * orbitRY
 
@@ -315,7 +398,7 @@ function drawTextAlongOrbit(planet: Planet): void {
   }
 }
 
-// ── Planet rendering ──
+// ── Planet ──
 function drawPlanet(planet: Planet, index: number): void {
   const angle = time * planet.orbitSpeed * 0.01 + planet.orbitOffset
   const px = Math.cos(angle) * planet.orbitRadius
@@ -334,7 +417,7 @@ function drawPlanet(planet: Planet, index: number): void {
   ctx.fillStyle = glow
   ctx.fillRect(sx - glowR, sy - glowR, glowR * 2, glowR * 2)
 
-  // Draw pre-rendered planet texture
+  // Cached texture
   if (!planetTextures.has(index) || planet.textureDirty) {
     planetTextures.set(index, renderPlanetTexture(planet, index))
     planet.textureDirty = false
@@ -343,21 +426,20 @@ function drawPlanet(planet: Planet, index: number): void {
   const drawSize = (planet.radius + 2) * 2 * zoom
   ctx.drawImage(tex, sx - drawSize / 2, sy - drawSize / 2, drawSize, drawSize)
 
-  // Planet name
-  ctx.font = `700 ${Math.max(7, 10 * zoom)}px "Helvetica Neue", system-ui, sans-serif`
+  // Name
+  const nameFontSize = Math.max(6, (isMobile ? 8 : 10) * zoom)
+  ctx.font = `700 ${nameFontSize}px "Helvetica Neue", system-ui, sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'top'
   ctx.fillStyle = `hsla(${planet.hue}, 50%, 70%, 0.35)`
-  ctx.fillText(planet.name, sx, sy + r + 8 * zoom)
+  ctx.fillText(planet.name, sx, sy + r + 6 * zoom)
 
-  // Saturn-style text rings (few words, not per-char)
+  // Rings (desktop only)
   for (let ring = 0; ring < planet.ringCount; ring++) {
     const ringR = r * (1.6 + ring * 0.4)
     const ringRY = ringR * planet.tilt
-    const ringFontSize = Math.max(5, 6 * zoom)
-    ctx.font = `${ringFontSize}px "Iowan Old Style", Palatino, serif`
+    ctx.font = `${Math.max(5, 6 * zoom)}px "Iowan Old Style", Palatino, serif`
 
-    // Render 6 word chunks around the ring instead of per-character
     const chunks = 6
     for (let c = 0; c < chunks; c++) {
       const charAngle = time * 0.006 * (ring % 2 === 0 ? 1 : -1) + (c / chunks) * Math.PI * 2
@@ -372,8 +454,7 @@ function drawPlanet(planet: Planet, index: number): void {
       ctx.save()
       ctx.translate(rx, ry)
       ctx.rotate(charAngle + Math.PI / 2)
-      const word = planet.text.split(' ')[c % planet.text.split(' ').length] ?? '·'
-      ctx.fillText(word, 0, 0)
+      ctx.fillText(planet.words[c % planet.words.length] ?? '·', 0, 0)
       ctx.restore()
     }
   }
@@ -382,10 +463,10 @@ function drawPlanet(planet: Planet, index: number): void {
 // ── Sun ──
 function drawSun(): void {
   const [sx, sy] = worldToScreen(0, 0)
-  const baseR = 50 * zoom
+  const baseR = (isMobile ? 35 : 50) * zoom
   const pulseR = baseR + Math.sin(time * 0.02) * 4 * zoom
 
-  // Corona (just 2 layers)
+  // Corona
   for (let layer = 1; layer >= 0; layer--) {
     const lr = pulseR * (1 + layer * 1.2)
     const grad = ctx.createRadialGradient(sx, sy, 0, sx, sy, lr)
@@ -397,12 +478,12 @@ function drawSun(): void {
     ctx.fillRect(sx - lr, sy - lr, lr * 2, lr * 2)
   }
 
-  // Sun text surface (using pretext layout into circle)
+  // Sun text surface
   if (ringPrepared) {
     let cursor = { segmentIndex: 0, graphemeIndex: 0 }
     const lineH = Math.max(8, 10 * zoom)
     const lineCount = Math.floor((pulseR * 2) / lineH)
-    const fontSize = Math.max(6, 8 * zoom)
+    const fontSize = Math.max(5, (isMobile ? 6 : 8) * zoom)
     ctx.font = `700 ${fontSize}px "Helvetica Neue", system-ui, sans-serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
@@ -427,7 +508,7 @@ function drawSun(): void {
   }
 
   // Label
-  ctx.font = `700 ${Math.max(8, 12 * zoom)}px "Helvetica Neue", system-ui, sans-serif`
+  ctx.font = `700 ${Math.max(7, (isMobile ? 10 : 12) * zoom)}px "Helvetica Neue", system-ui, sans-serif`
   ctx.textAlign = 'center'
   ctx.textBaseline = 'top'
   ctx.fillStyle = 'hsla(40, 80%, 70%, 0.25)'
@@ -435,8 +516,10 @@ function drawSun(): void {
 }
 
 // ── Shooting stars ──
+const MAX_SHOOTING_STARS = isMobile ? 1 : 2
+
 function drawShootingStars(): void {
-  if (Math.random() < 0.005 && shootingStars.length < 2) {
+  if (Math.random() < 0.005 && shootingStars.length < MAX_SHOOTING_STARS) {
     const angle = Math.random() * Math.PI * 2
     const speed = 4 + Math.random() * 4
     const words = TEXTS[Math.floor(Math.random() * TEXTS.length)]!.split(' ')
@@ -461,7 +544,6 @@ function drawShootingStars(): void {
     const alpha = lifeRatio < 0.1 ? lifeRatio * 10 : (1 - lifeRatio)
     const angle = Math.atan2(s.vy, s.vx)
 
-    // Simple tail line
     const tailLen = 40 * zoom
     ctx.strokeStyle = `hsla(40, 80%, 80%, ${alpha * 0.3})`
     ctx.lineWidth = 1
@@ -470,7 +552,6 @@ function drawShootingStars(): void {
     ctx.lineTo(sx - Math.cos(angle) * tailLen, sy - Math.sin(angle) * tailLen)
     ctx.stroke()
 
-    // Text
     ctx.font = `${Math.max(8, 11 * zoom)}px "Iowan Old Style", Palatino, serif`
     ctx.fillStyle = `hsla(40, 90%, 90%, ${alpha})`
     ctx.save()
@@ -483,6 +564,8 @@ function drawShootingStars(): void {
 }
 
 // ── Supernovae ──
+const SUPERNOVA_FRAGS = isMobile ? 5 : 8
+
 function drawSupernovae(): void {
   for (let i = supernovae.length - 1; i >= 0; i--) {
     const sn = supernovae[i]!
@@ -490,17 +573,15 @@ function drawSupernovae(): void {
     if (sn.t > 100) { supernovae.splice(i, 1); continue }
 
     const progress = sn.t / 100
-    const r = (1 - Math.pow(1 - progress, 3)) * 180 * zoom
+    const r = (1 - Math.pow(1 - progress, 3)) * (isMobile ? 120 : 180) * zoom
     const alpha = (1 - progress) * 0.5
 
-    // Ring
     ctx.strokeStyle = `hsla(${sn.hue}, 80%, 70%, ${alpha * 0.4})`
     ctx.lineWidth = 1.5
     ctx.beginPath()
     ctx.arc(sn.x, sn.y, r, 0, Math.PI * 2)
     ctx.stroke()
 
-    // Glow
     const grad = ctx.createRadialGradient(sn.x, sn.y, 0, sn.x, sn.y, r)
     grad.addColorStop(0, `hsla(${sn.hue}, 90%, 90%, ${alpha * 0.25})`)
     grad.addColorStop(0.6, `hsla(${sn.hue + 30}, 70%, 60%, ${alpha * 0.06})`)
@@ -508,12 +589,11 @@ function drawSupernovae(): void {
     ctx.fillStyle = grad
     ctx.fillRect(sn.x - r, sn.y - r, r * 2, r * 2)
 
-    // Word fragments flying out (8 instead of 12)
     ctx.font = `${Math.max(7, 10 * zoom)}px "Iowan Old Style", Palatino, serif`
     ctx.textAlign = 'center'
     ctx.textBaseline = 'middle'
-    for (let f = 0; f < 8; f++) {
-      const fa = (f / 8) * Math.PI * 2 + sn.t * 0.015
+    for (let f = 0; f < SUPERNOVA_FRAGS; f++) {
+      const fa = (f / SUPERNOVA_FRAGS) * Math.PI * 2 + sn.t * 0.015
       const fd = r * (0.4 + (f % 3) * 0.2)
       ctx.fillStyle = `hsla(${sn.hue + f * 25}, 70%, 75%, ${alpha})`
       const word = TEXTS[f % TEXTS.length]!.split(' ')[f % 5] ?? '*'
@@ -522,7 +602,7 @@ function drawSupernovae(): void {
   }
 }
 
-// ── Cursor glow ──
+// ── Cursor/touch glow ──
 function drawCursorGlow(): void {
   if (!mouse.active) return
   const r = 60 * zoom
@@ -538,11 +618,9 @@ function loop(): void {
   time++
   ctx.clearRect(0, 0, W, H)
 
-  // Background
   ctx.fillStyle = '#010108'
   ctx.fillRect(0, 0, W, H)
 
-  // Subtle center glow
   const bgGrad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, 400 * zoom)
   bgGrad.addColorStop(0, 'hsla(240, 30%, 12%, 0.4)')
   bgGrad.addColorStop(1, 'transparent')
