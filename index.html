@@ -4,49 +4,284 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Text Cosmos</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=UnifrakturMaguntia&family=Cormorant+Garamond:ital,wght@0,300;0,400;0,500;0,600;1,300;1,400&family=IM+Fell+English:ital@0;1&display=swap" rel="stylesheet">
     <style>
       * { box-sizing: border-box; margin: 0; }
       html, body {
-        height: 100%;
-        height: 100dvh;
-        background: #010108;
+        height: 100%; height: 100dvh;
+        background: #0e0b08;
         overflow: hidden;
-        cursor: crosshair;
         touch-action: none;
         -webkit-touch-callout: none;
         -webkit-user-select: none;
         user-select: none;
         overscroll-behavior: none;
+        font-family: "Helvetica Neue", system-ui, sans-serif;
+        color: #e8e4dc;
       }
-      canvas {
+
+      /* ── SEARCH SCREEN ── */
+      #search-screen {
+        position: absolute; inset: 0;
+        display: flex; flex-direction: column; align-items: center;
+        z-index: 20; overflow-y: auto; overflow-x: hidden;
+        padding: max(50px, 6vh) 20px 40px;
+        background: #0e0b08;
+        transition: opacity 0.5s, transform 0.5s;
+      }
+      #search-screen.hiding { opacity: 0; transform: scale(0.97); pointer-events: none; }
+      #search-screen.hidden { display: none; }
+      .search-title {
+        font: 400 clamp(36px, 8vw, 64px)/1 "UnifrakturMaguntia", cursive;
+        color: rgba(232, 228, 220, 0.8);
+        margin-bottom: 6px; text-align: center;
+      }
+      .search-sub {
+        font: italic 300 clamp(13px, 2.5vw, 15px)/1.5 "Cormorant Garamond", serif;
+        color: rgba(255,255,255,0.25); margin-bottom: 28px; text-align: center;
+      }
+      .search-box { width: min(720px, 92vw); margin-bottom: 20px; }
+      .search-box input {
+        width: 100%; padding: 13px 18px;
+        border: 1px solid rgba(255,255,255,0.08); border-radius: 0;
+        background: rgba(255,255,255,0.03); color: #e8e4dc;
+        font: 400 16px/1.4 "Cormorant Garamond", serif; outline: none;
+        transition: border-color 0.2s;
+      }
+      .search-box input::placeholder { color: rgba(255,255,255,0.18); }
+      .search-box input:focus { border-color: rgba(255,255,255,0.15); }
+      .suggestions-label {
+        width: min(720px, 92vw);
+        font: 500 9px/1 "Helvetica Neue", sans-serif;
+        text-transform: uppercase; letter-spacing: 0.16em;
+        color: rgba(255,255,255,0.15); margin-bottom: 14px;
+      }
+      .bento-grid {
+        width: min(720px, 92vw);
+        display: grid; grid-template-columns: repeat(3, 1fr); gap: 0;
+      }
+      @media (max-width: 600px) { .bento-grid { grid-template-columns: 1fr 1fr; } }
+      .bento-card {
+        padding: 22px 20px; border: 1px solid rgba(255,255,255,0.06);
+        margin: -0.5px; cursor: pointer; transition: background 0.2s;
+        touch-action: manipulation; display: flex; flex-direction: column;
+      }
+      .bento-card:hover { background: rgba(255,255,255,0.025); }
+      .bento-card.tall { grid-row: span 2; }
+      .bento-card .card-head {
+        font: 500 9px/1.2 "Helvetica Neue", sans-serif;
+        text-transform: uppercase; letter-spacing: 0.14em;
+        color: rgba(255,255,255,0.3); margin-bottom: 10px;
+        padding-bottom: 10px; border-bottom: 1px solid rgba(255,255,255,0.05);
+      }
+      .bento-card .card-title {
+        font: 500 clamp(16px, 3.5vw, 20px)/1.25 "Cormorant Garamond", serif;
+        color: rgba(232, 228, 220, 0.85); margin-bottom: 4px;
+      }
+      .bento-card .card-author {
+        font: 400 11px/1.3 "Helvetica Neue", sans-serif; color: rgba(255,255,255,0.22);
+      }
+      .bento-card .card-quote {
+        font: italic 300 13px/1.5 "Cormorant Garamond", serif;
+        color: rgba(255,255,255,0.15); margin-top: auto; padding-top: 14px;
+      }
+      .search-results {
+        width: min(720px, 92vw); max-height: 50vh; overflow-y: auto;
+        display: none; flex-direction: column; gap: 0;
+      }
+      .search-results.active { display: flex; }
+      .result-item {
+        padding: 16px 20px; border: 1px solid rgba(255,255,255,0.06);
+        margin: -0.5px; cursor: pointer; transition: background 0.15s;
+      }
+      .result-item:hover { background: rgba(255,255,255,0.025); }
+      .result-title { font: 500 16px/1.3 "Cormorant Garamond", serif; color: rgba(232,228,220,0.85); }
+      .result-author { font: 400 11px/1.3 "Helvetica Neue", sans-serif; color: rgba(255,255,255,0.22); margin-top: 2px; }
+      .search-loading { color: rgba(255,255,255,0.22); font-size: 13px; margin-top: 16px; }
+
+      /* ── LOADING ── */
+      #loading-overlay {
+        position: absolute; inset: 0; display: none;
+        align-items: center; justify-content: center; z-index: 15;
+        background: rgba(14, 11, 8, 0.95);
+      }
+      #loading-overlay.active { display: flex; }
+      .loading-text { font: 300 20px/1.4 "Cormorant Garamond", serif; color: rgba(232,228,220,0.4); }
+
+      /* ── BOOK READER (full screen) ── */
+      #book-reader {
+        position: absolute; inset: 0; display: none;
+        flex-direction: column; z-index: 10;
+        background: #0e0b08;
+      }
+      #book-reader.active { display: flex; }
+
+      /* The page fills everything */
+      .tome {
+        flex: 1; position: relative; overflow: hidden;
+        /* aged parchment */
+        background:
+          radial-gradient(ellipse at 20% 10%, rgba(220,200,160,0.08), transparent 40%),
+          radial-gradient(ellipse at 80% 90%, rgba(190,170,130,0.06), transparent 40%),
+          radial-gradient(ellipse at 50% 50%, rgba(240,220,180,0.03), transparent 60%),
+          linear-gradient(to bottom, #e8dcc4, #e2d4b6 20%, #dfd0ad 50%, #dccba5 80%, #d6c49c);
+        color: #1e1810;
+      }
+
+      /* vignette burn */
+      .tome::before {
+        content: ''; position: absolute; inset: 0; pointer-events: none; z-index: 5;
+        background: radial-gradient(ellipse at center, transparent 50%, rgba(14,11,8,0.35) 100%);
+      }
+
+      /* ornate border frame */
+      .tome-border {
+        position: absolute; inset: 0; pointer-events: none; z-index: 4;
+        border: 2px solid rgba(100, 70, 40, 0.2);
+        margin: 12px;
+      }
+      .tome-border::before {
+        content: ''; position: absolute; inset: 4px;
+        border: 1px solid rgba(100, 70, 40, 0.12);
+      }
+      .tome-border::after {
+        content: ''; position: absolute; inset: 8px;
+        border: 1px solid rgba(100, 70, 40, 0.06);
+      }
+      /* corner ornaments */
+      .corner { position: absolute; z-index: 4; pointer-events: none;
+        font: 400 28px/1 "Cormorant Garamond", serif; color: rgba(100,70,40,0.25); }
+      .corner--tl { top: 16px; left: 20px; }
+      .corner--tr { top: 16px; right: 20px; transform: scaleX(-1); }
+      .corner--bl { bottom: 16px; left: 20px; transform: scaleY(-1); }
+      .corner--br { bottom: 16px; right: 20px; transform: scale(-1); }
+
+      /* page content */
+      .tome-content {
         position: absolute;
-        inset: 0;
-        width: 100%;
-        height: 100%;
-        height: 100dvh;
+        top: 40px; bottom: 50px;
+        left: 50%; transform: translateX(-50%);
+        width: min(580px, calc(100vw - 80px));
+        overflow: hidden; z-index: 2;
       }
-      .hint {
-        position: fixed;
-        bottom: max(20px, env(safe-area-inset-bottom, 0px));
-        left: 50%;
-        transform: translateX(-50%);
-        padding: 8px 16px;
-        border-radius: 999px;
-        background: rgba(255,255,255,0.05);
-        backdrop-filter: blur(12px);
-        color: rgba(255,255,255,0.4);
-        font: 500 11px/1.2 "Helvetica Neue", sans-serif;
-        letter-spacing: 0.04em;
-        white-space: nowrap;
-        user-select: none;
-        pointer-events: none;
+      .tome-header {
+        text-align: center; margin-bottom: 16px; padding-bottom: 12px;
+        border-bottom: 1px solid rgba(80, 60, 30, 0.12);
+      }
+      .tome-header .chapter-title {
+        font: 400 clamp(22px, 5vw, 32px)/1.1 "UnifrakturMaguntia", cursive;
+        color: rgba(60, 40, 20, 0.7);
+        margin-bottom: 4px;
+      }
+      .tome-header .chapter-ornament {
+        font: 400 14px/1 "Cormorant Garamond", serif;
+        color: rgba(100, 70, 40, 0.3);
+        letter-spacing: 0.3em;
+      }
+      .tome-body {
+        font: 400 clamp(15px, 2.8vw, 18px)/1.75 "Cormorant Garamond", "IM Fell English", Georgia, serif;
+        color: rgba(30, 24, 16, 0.8);
+        text-align: justify; hyphens: auto;
+        column-count: 1;
+      }
+      .tome-body .line { display: block; }
+      .tome-body .drop-cap {
+        float: left;
+        font: 400 clamp(72px, 14vw, 96px)/0.72 "UnifrakturMaguntia", cursive;
+        color: rgba(120, 50, 20, 0.6);
+        margin: 0 8px -4px -4px; padding-top: 6px;
+      }
+
+      /* page number */
+      .tome-pagenum {
+        position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+        font: 400 13px/1 "Cormorant Garamond", serif;
+        color: rgba(80, 60, 30, 0.25); z-index: 3;
+        letter-spacing: 0.1em;
+      }
+
+      /* ── FLYING ASCII ART CANVAS ── */
+      #art-canvas {
+        position: absolute; inset: 0;
+        width: 100%; height: 100%;
+        pointer-events: none; z-index: 6;
+      }
+
+      /* click zone for spawning art */
+      .spawn-zone {
+        position: absolute; inset: 0; z-index: 7;
+        cursor: crosshair;
+      }
+
+      /* ── CONTROLS ── */
+      .controls {
+        position: absolute; bottom: 0; left: 0; right: 0;
+        display: flex; align-items: center; justify-content: center;
+        gap: 12px; padding: 10px 16px;
+        background: linear-gradient(to top, rgba(14,11,8,0.9), transparent);
         z-index: 10;
+      }
+      .ctrl-btn {
+        font: 400 11px/1 "Helvetica Neue", sans-serif;
+        color: rgba(200,190,170,0.5); background: none;
+        border: 1px solid rgba(200,190,170,0.12);
+        padding: 7px 14px; cursor: pointer; touch-action: manipulation;
+        transition: color 0.2s, border-color 0.2s;
+      }
+      .ctrl-btn:hover { color: rgba(200,190,170,0.8); border-color: rgba(200,190,170,0.25); }
+      .ctrl-btn.active { color: rgba(200,190,170,0.8); border-color: rgba(200,190,170,0.3); }
+      .ctrl-indicator {
+        font: 400 11px/1 "Cormorant Garamond", serif;
+        color: rgba(200,190,170,0.3); min-width: 70px; text-align: center;
       }
     </style>
   </head>
   <body>
-    <canvas id="cosmos"></canvas>
-    <p class="hint" id="hint"></p>
-    <script type="module" src="/cosmos.ts"></script>
+    <div id="search-screen">
+      <h1 class="search-title">Text Cosmos</h1>
+      <p class="search-sub">Choose a tome from the library below</p>
+      <div class="search-box">
+        <input id="search-input" type="text" placeholder="Search the archives..." autocomplete="off" autocapitalize="off" />
+      </div>
+      <div id="search-results" class="search-results"></div>
+      <p id="search-loading" class="search-loading"></p>
+      <p class="suggestions-label" id="suggestions-label">The collection</p>
+      <div id="bento-grid" class="bento-grid"></div>
+    </div>
+
+    <div id="loading-overlay">
+      <p class="loading-text" id="loading-text">Summoning text...</p>
+    </div>
+
+    <div id="book-reader">
+      <div class="tome" id="tome">
+        <div class="tome-border"></div>
+        <span class="corner corner--tl">&#x2767;</span>
+        <span class="corner corner--tr">&#x2767;</span>
+        <span class="corner corner--bl">&#x2767;</span>
+        <span class="corner corner--br">&#x2767;</span>
+        <div class="tome-content" id="tome-content">
+          <div class="tome-header" id="tome-header">
+            <div class="chapter-title" id="chapter-title"></div>
+            <div class="chapter-ornament">&#x2022; &#x2022; &#x2022;</div>
+          </div>
+          <div class="tome-body" id="tome-body"></div>
+        </div>
+        <div class="tome-pagenum" id="tome-pagenum"></div>
+        <canvas id="art-canvas"></canvas>
+        <div class="spawn-zone" id="spawn-zone"></div>
+      </div>
+      <div class="controls">
+        <button class="ctrl-btn" id="btn-back">&larr; Library</button>
+        <button class="ctrl-btn" id="btn-prev">&lsaquo;</button>
+        <span class="ctrl-indicator" id="page-indicator"></span>
+        <button class="ctrl-btn" id="btn-next">&rsaquo;</button>
+        <button class="ctrl-btn" id="btn-auto">Auto</button>
+        <button class="ctrl-btn" id="btn-art">+ Art</button>
+      </div>
+    </div>
+
+    <script type="module" src="/app.ts"></script>
   </body>
 </html>
